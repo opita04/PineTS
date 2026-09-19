@@ -737,6 +737,11 @@ export class Context {
             return source;
         }
 
+        // Trade-count namespace snapshots are scalar series despite also
+        // carrying methods. Store their value so [1] reads the prior bar.
+        if (source !== null && typeof source === 'object' && typeof source[Symbol.toPrimitive] === 'function') {
+            source = source[Symbol.toPrimitive]('default');
+        }
         if (!Array.isArray(source) && typeof source === 'object') return source;
 
         if (!this.params[name]) this.params[name] = [];

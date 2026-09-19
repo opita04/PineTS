@@ -15,8 +15,9 @@ import { parseArgsForPineParams } from '../../utils';
  * Behavior:
  *   - Queues a market exit order tagged with the matching entry id and an
  *     optional qty / qty_percent partial. The fill happens on the next bar's
- *     open (or current bar's close if `immediately=true` AND the script
- *     declared `process_orders_on_close=true`).
+ *     open, or current bar's close when the script declares
+ *     `process_orders_on_close=true`. Independent `immediately=true`
+ *     same-tick execution is not implemented yet.
  *   - `qty` and `qty_percent` apply to the SUM of contracts open from the
  *     matching entries (FIFO across multiple stacked entries with same id).
  */

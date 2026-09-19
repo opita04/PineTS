@@ -32,6 +32,7 @@
  */
 
 import * as astring from 'astring';
+import * as walk from 'acorn-walk';
 
 const SLICING_TARGETS = new Set(['security_lower_tf', 'security']);
 
@@ -212,27 +213,18 @@ function findEarliestInvocationIdx(wrapperBody: any, fnName: string, fnDeclNode:
 }
 
 function subtreeContainsDollarCall(root: any, fnName: string): boolean {
-    let found = false;
-    const seen = new WeakSet<object>();
-    function walk(n: any) {
-        if (found || !n || typeof n !== 'object') return;
-        if (seen.has(n)) return;
-        seen.add(n);
-        if (dollarCallTarget(n) === fnName) {
-            found = true;
-            return;
-        }
-        for (const key of Object.keys(n)) {
-            if (AST_SKIP_KEYS.has(key)) continue;
-            const v = n[key];
-            if (Array.isArray(v)) {
-                for (const item of v) walk(item);
-            } else if (v && typeof v === 'object') {
-                walk(v);
-            }
-        }
-    }
-    walk(root);
+    return findDollarCallPath(root, fnName) !== null;
+}
+
+/** Find the invocation path so its caller can also be truncated safely. */
+function findDollarCallPath(root: any, fnName: string): any[] | null {
+    let found: any[] | null = null;
+    // Semantic AST traversal ignores stale fields left when transforms change
+    // a VariableDeclaration into a BlockStatement. Walking Object.keys can
+    // otherwise find the obsolete declaration before the executable body.
+    walk.fullAncestor(root, (node: any, _state: any, ancestors: any[]) => {
+        if (!found && dollarCallTarget(node) === fnName) found = ancestors.slice();
+    });
     return found;
 }
 
@@ -279,6 +271,17 @@ function buildPhase3SliceStmts(wrapperBody: any, path: any[]): any[] | null {
     if (fnNode.type !== 'FunctionDeclaration' || !fnNode.id?.name) return null;
     const fnName = fnNode.id.name;
 
+    // A single pN slice cannot select different static caller identities. Nor
+    // can it remove a loop tail safely: that tail may advance or break the loop.
+    // Keep the full-script secondary fallback for these unsupported shapes.
+    const invocations: any[][] = [];
+    walk.fullAncestor(wrapperBody, (node: any, _state: any, ancestors: any[]) => {
+        if (dollarCallTarget(node) === fnName) invocations.push(ancestors.slice());
+    });
+    if (invocations.length !== 1 || invocations[0].concat(path).some(node =>
+        ['ForStatement', 'ForInStatement', 'ForOfStatement', 'WhileStatement', 'DoWhileStatement'].includes(node.type)
+    )) return null;
+
     // Slice the function's body at the call.
     const fnSlicePath = path.slice(fnIdx); // [fnDecl, fnDecl.body?, …, call]
     const slicedFn = sliceAlongPath(fnNode, fnSlicePath, 0);
@@ -299,7 +302,17 @@ function buildPhase3SliceStmts(wrapperBody: any, path: any[]): any[] | null {
     const lastIdx = Math.max(invIdx, fnDeclIdx);
     for (let i = 0; i <= lastIdx; i++) {
         const s = stmts[i];
-        result.push(s === fnNode ? slicedFn : s);
+        if (s === fnNode) {
+            result.push(slicedFn);
+        } else if (i === invIdx) {
+            // The sliced helper intentionally stops before its return. Stop
+            // its caller at the invocation too, before tuple extraction or
+            // other statements consume that now-missing return value.
+            const invocationPath = findDollarCallPath(s, fnName);
+            result.push(invocationPath ? sliceAlongPath(s, invocationPath, 0) : s);
+        } else {
+            result.push(s);
+        }
     }
     return result;
 }

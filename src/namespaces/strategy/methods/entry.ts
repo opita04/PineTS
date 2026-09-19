@@ -139,6 +139,7 @@ export function entry(context: any) {
             // overshoot as two separate lots (xlsx 2021-10-02: 5 +
             // 0.263108 longs at the same fill).
             _base_qty: baseQty,
+            _uses_default_qty: qtyValue === undefined || qtyValue === null,
         } as any;
 
         strategy.pending_orders.push(orderObj);

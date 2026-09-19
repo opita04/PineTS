@@ -4,7 +4,13 @@ import { Series } from '../../../Series';
 
 export function param(context: any) {
     return (source: any, index: any, name?: string) => {
-        if (!context.params[name]) context.params[name] = [];
+        if (!context.params[name]) {
+            // security resolves expression history by the secondary data's bar
+            // index. A request first evaluated inside a late conditional must
+            // retain that coordinate system, not start its history at index 0.
+            const bars = context.data?.openTime?.data?.length ?? 0;
+            context.params[name] = new Array(Math.max(0, bars)).fill(NaN);
+        }
 
         let val;
         if (source instanceof Series) {

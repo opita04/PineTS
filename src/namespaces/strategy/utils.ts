@@ -139,7 +139,7 @@ export function computeHeldMargin(context: any, atPrice: number): number {
 /**
  * Calculate order quantity based on strategy configuration
  */
-export function calculateOrderQty(context: any, specifiedQty: number | undefined, direction: number, fillPrice: number): number {
+export function calculateOrderQty(context: any, specifiedQty: number | undefined, direction: number, fillPrice: number, equity?: number): number {
     const strategy: StrategyState = context.strategy;
 
     // Get qty type and value, calling functions if needed
@@ -186,7 +186,7 @@ export function calculateOrderQty(context: any, specifiedQty: number | undefined
         case 'percent_of_equity': {
             // Calculate quantity based on percentage of equity
             // qty_value=10 means 10% of equity
-            const positionValue = (strategy.equity * qtyValue) / 100;
+            const positionValue = ((equity ?? strategy.equity) * qtyValue) / 100;
             rawQty = positionValue / (fillPrice * pointValue);
             break;
         }
@@ -258,14 +258,14 @@ function advanceExcursions(context: any, end: number): void {
 /**
  * Process pending orders and execute them
  */
-export function processStrategyOrders(context: any): void {
+export function processStrategyOrders(context: any, phase: 'open' | 'close' = 'open'): void {
     if (!context.strategy) return;
 
     const strategy: StrategyState = context.strategy;
     const { pending_orders } = strategy;
 
     // Get current bar's OHLC data
-    const openPrice = Series.from(context.data.open).get(0);
+    const openPrice = Series.from(phase === 'close' ? context.data.close : context.data.open).get(0);
     const highPrice = Series.from(context.data.high).get(0);
     const lowPrice = Series.from(context.data.low).get(0);
     const closePrice = Series.from(context.data.close).get(0);
@@ -284,7 +284,7 @@ export function processStrategyOrders(context: any): void {
 
         // Orders placed on bar N can only fill on bar N+1 or later
         // Skip if this order was placed on the current bar (context.idx)
-        if (order.bar >= context.idx) {
+        if (phase === 'close' ? order.type !== 'market' || order.bar !== context.idx : order.bar >= context.idx) {
             continue;
         }
 
@@ -304,13 +304,14 @@ export function processStrategyOrders(context: any): void {
                 if (order.limit !== undefined) {
                     const direction = parseDirection(order.direction);
                     if (direction === 1 && lowPrice <= order.limit) {
-                        // Long limit order - buy when price drops to limit
+                        // A resting buy limit crossed in an opening gap receives
+                        // the better open; an intrabar touch fills at the limit.
                         shouldFill = true;
-                        fillPrice = order.limit;
+                        fillPrice = Math.min(openPrice, order.limit);
                     } else if (direction === -1 && highPrice >= order.limit) {
-                        // Short limit order - sell when price rises to limit
+                        // Apply the symmetric opening price improvement to sells.
                         shouldFill = true;
-                        fillPrice = order.limit;
+                        fillPrice = Math.max(openPrice, order.limit);
                     }
                 }
                 break;
@@ -344,12 +345,27 @@ export function processStrategyOrders(context: any): void {
                 continue;
             }
 
-            order._fill_path = order.type === 'market' ? 0 : pathPosition(context, fillPrice);
+            order._fill_path = phase === 'close' ? 3 : order.type === 'market' ? 0 : pathPosition(context, fillPrice);
 
             // Apply slippage against the trade direction (longs fill higher,
             // shorts fill lower). slippage is in ticks of syminfo.mintick.
             const direction = parseDirection(order.direction);
             if (order.type !== 'limit') fillPrice = applySlippage(context, direction, fillPrice);
+
+            if (phase === 'close' && order._uses_default_qty) {
+                const oldSize = strategy.position_size;
+                const reversing = oldSize !== 0 && Math.sign(oldSize) !== direction;
+                // Size the new leg after closing the outgoing leg and paying
+                // its execution costs. This matters at contract boundaries.
+                const pointValue = context.pine?.syminfo?.pointvalue ?? 1;
+                const equityAfterClose = strategy.equity + (reversing
+                    ? oldSize * (fillPrice - closePrice) * pointValue
+                      - computeLegCommission(context, strategy, Math.abs(oldSize), fillPrice)
+                    : 0);
+                const baseQty = calculateOrderQty(context, undefined, direction, fillPrice, equityAfterClose);
+                order._base_qty = baseQty;
+                order.qty = baseQty + (reversing ? Math.abs(oldSize) : 0);
+            }
 
             // Pre-trade margin check (Pine broker emulator). When the
             // required margin for the new position would exceed available
@@ -1191,7 +1207,7 @@ export function closeMatching(
  *     triggers evaluated against current bar's high/low. Trailing-stop
  *     peak (trade.trail_peak) is updated each bar even when not triggered.
  */
-export function processExitOrders(context: any, phase: 'open' | 'intrabar' = 'intrabar'): void {
+export function processExitOrders(context: any, phase: 'open' | 'intrabar' | 'close' = 'intrabar'): void {
     if (!context.strategy) return;
     const strategy: StrategyState = context.strategy;
     if (strategy.pending_orders.length === 0) return;
@@ -1269,11 +1285,11 @@ export function processExitOrders(context: any, phase: 'open' | 'intrabar' = 'in
             // _intended_trade_ids snapshot above.
             if (phase === 'open') continue;
             // Skip orders placed on the current bar — they fill on the next bar's open.
-            if (order.bar >= context.idx) continue;
+            if (phase === 'close' ? order.bar !== context.idx : order.bar >= context.idx) continue;
 
             // Determine fill price; immediately=true (when supported) would fire
             // at current close; default is current bar's open.
-            let fillPrice = order.immediately ? closePrice : openPrice;
+            let fillPrice = phase === 'close' || order.immediately ? closePrice : openPrice;
             // Apply slippage against the close direction (opposite of position direction).
             fillPrice = applySlippage(context, -matchingDir, fillPrice);
 
@@ -1286,7 +1302,7 @@ export function processExitOrders(context: any, phase: 'open' | 'intrabar' = 'in
             closeMatching(context, order.from_entry, qtyToClose, fillPrice, currentTime, {
                 exitId: order.id,
                 exitComment: order.comment,
-                fillPath: order.immediately ? 3 : 0,
+                fillPath: phase === 'close' || order.immediately ? 3 : 0,
             });
             order.status = 'filled';
             order.fill_price = fillPrice;
@@ -1294,6 +1310,9 @@ export function processExitOrders(context: any, phase: 'open' | 'intrabar' = 'in
             order.fill_time = currentTime;
             continue;
         }
+
+        // The close pass does not revisit earlier intrabar price touches.
+        if (phase === 'close') continue;
 
         // ---- Conditional exits from exit() ----
         // PER-TRADE exit brackets (TV broker-emulator semantics): when a
@@ -1351,25 +1370,10 @@ export function processExitOrders(context: any, phase: 'open' | 'intrabar' = 'in
             }
         }
 
-        // Stale-attachment drop: when the exit was queued at the same bar
-        // as the reversal entry it attaches to, the user's absolute
-        // limit/stop values were computed from the OUTGOING position's
-        // avg. TV's behavior depends on the user's variable scope: if the
-        // variable was scoped to an if-block (lazy series eval gives NA
-        // on non-trigger bars), TV doesn't fire; if the variable is in
-        // main scope (always-defined value), TV fires the captured value.
-        //
-        // Cadence detection runs at queue time (see exit.ts): the
-        // `_isPersistent` flag is set when the user called this same
-        // call site on the prior bar (i.e. the strategy.exit line is
-        // being re-executed every bar). Persistent capture → trust the
-        // value (mirrors TV's main-scope path). Ephemeral capture →
-        // drop the absolute legs (mirrors TV's NA-on-non-trigger-bar
-        // path for if-block-scoped vars).
-        if (order._attachedAtReversal && !order._isPersistent) {
-            if (order.limit !== undefined) absTp = undefined;
-            if (order.stop !== undefined) absSl = undefined;
-        }
+        // A reversal does not invalidate absolute exit prices. They may be
+        // computed from close (rather than the outgoing position average),
+        // and a sparse call remains active until filled or cancelled.
+        // Captured native MNQ trade 8 exercises this case.
 
         // Trailing-stop state.
         // Two arming modes:
@@ -1794,22 +1798,26 @@ export function processMarginCall(context: any, checkpoint: 'open' | 'extreme' |
         // at price 110,797.38 → 4 × 0.30328) and 0.48244 of another
         // (deficit $10,924.98 at 90,574.00 → 4 × 0.12061).
         const deficit = requiredMarginAtAdverse - equityAtAdverse;
-        // Full-precision cover — no truncation. Verified against the
-        // commission-0 margin oracle (BTCUSDC weekly) where TV's
-        // liquidation qty matches PT's untruncated 4× cover exactly, and
-        // against the BTCUSDC avg_price QA xlsx (TV qty 3.602232 ≈ 7
-        // significant digits). An earlier 5-decimal floor was overfit to
-        // the BTCUSDT margin_calls xlsx where TV's exported quantities
-        // (1.21312, 0.48244) are 7-significant-digit values with trailing
-        // zeros trimmed; the residual there (~$1 equity-basis opacity
-        // inside TV) is sub-dollar on a $530k net and accepted.
+        // Providers that omit mincontract retain full-precision cover for
+        // compatibility with the archived crypto captures. With an explicit
+        // contract step, truncate before multiplying by four, per
+        // https://www.tradingview.com/pine-script-docs/concepts/strategies/#margin
+        // The captured MNQ sub-contract deficit establishes the one-contract
+        // minimum used below when that truncated cover would otherwise be zero.
         //
         // The marginPct/100 divisor matters below 100%: TV liquidates
         // 4×deficit/(price·m) — verified exactly on fresh TV captures at
         // margin_long/short = 50 (close-MC investigation, 2026-06-12).
         const marginFrac = marginPct / 100;
         const coverQty = deficit / (adversePrice * pointValue * marginFrac);
-        const qtyToLiquidate = Math.min(totalQty, 4 * coverQty);
+        // TradingView truncates cover quantity to instrument precision before
+        // multiplying by four. A sub-contract deficit still liquidates one
+        // minimum contract, as the retained MNQ Donchian capture demonstrates.
+        const step = context.pine?.syminfo?.mincontract;
+        const covered = Number.isFinite(step) && step > 0
+            ? Math.max(step, 4 * Math.floor(coverQty / step) * step)
+            : 4 * coverQty;
+        const qtyToLiquidate = Math.min(totalQty, covered);
 
         // Remember the FIFO order before the close so we can identify the
         // PARTIALLY-consumed lot afterwards (the liquidation eats whole
@@ -1820,7 +1828,7 @@ export function processMarginCall(context: any, checkpoint: 'open' | 'extreme' |
         const frontQty = Math.abs(frontPiece.size);
         const frontEntry = frontPiece.entry_price;
 
-        closePartialPosition(context, qtyToLiquidate, adversePrice, currentTime, {
+        closePartialPosition(context, qtyToLiquidate, applySlippage(context, -positionDir, adversePrice), currentTime, {
             exitId: 'Margin call',
             exitComment: 'Margin call',
             fillPath: checkpoint === 'open' ? 0 : checkpoint === 'close' ? 3 : pathPosition(context, adversePrice),

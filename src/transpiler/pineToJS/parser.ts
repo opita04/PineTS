@@ -1032,6 +1032,11 @@ export class Parser {
         const last = statements[statements.length - 1];
         if (last.type === 'ExpressionStatement') {
             statements[statements.length - 1] = new ReturnStatement(last.expression);
+        } else if (last.type === 'VariableDeclaration' && last.declarations.length === 1 && last.declarations[0].id.type === 'ArrayPattern') {
+            // Pine returns the tuple produced by a final tuple declaration.
+            // Keep the declaration (and its single evaluation), then return its
+            // bindings. Share identifier nodes so codegen discard renames agree.
+            statements.push(new ReturnStatement(new ArrayExpression(last.declarations[0].id.elements)));
         } else if (last.type === 'IfStatement') {
             this._addImplicitReturnToIf(last);
         }

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import { Series } from '../../../Series';
+import { comparisonValue } from '../comparisonValue';
 
 export function __eq(context: any) {
     return (a: any, b: any) => {
         // Unwrap Series
-        const valA = Series.from(a).get(0);
-        const valB = Series.from(b).get(0);
+        const valA = comparisonValue(a);
+        const valB = comparisonValue(b);
 
         if (typeof valA === 'number' && typeof valB === 'number') {
             // Pine Script: any comparison with `na` evaluates to `na`, not false.

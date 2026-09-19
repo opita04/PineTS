@@ -9,9 +9,9 @@ export function pivotlow(source: number[], leftbars: number, rightbars: number):
         const pivot = source[i - rightbars];
         let isPivot = true;
 
-        // Check if the pivot is lower than all bars to the left within leftbars range
+        // Equal older lows are allowed; the rightmost plateau point wins.
         for (let j = 1; j <= leftbars; j++) {
-            if (source[i - rightbars - j] <= pivot) {
+            if (source[i - rightbars - j] < pivot) {
                 isPivot = false;
                 break;
             }

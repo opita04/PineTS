@@ -1197,6 +1197,12 @@ export class PineTS {
 
             const result = await transpiledFn(context);
 
+            // Orders submitted by this calculation may fill on its closing tick.
+            if (context.strategy?.config.process_orders_on_close) {
+                processStrategyOrders(context, 'close');
+                processExitOrders(context, 'close');
+            }
+
             //collect results
             if (typeof result === 'object') {
                 if (typeof context.result !== 'object') {

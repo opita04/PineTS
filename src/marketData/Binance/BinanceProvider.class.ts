@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 const BINANCE_API_URL_DEFAULT = 'https://api.binance.com/api/v3';
-const BINANCE_API_URL_US = 'https://api.binance.us/api/v3';
 
 const timeframe_to_binance = {
     '1': '1m', // 1 minute
@@ -92,7 +91,6 @@ class CacheManager<T> {
 
 export class BinanceProvider extends BaseProvider<BinanceProviderConfig> {
     private cacheManager: CacheManager<Kline[]>;
-    private activeApiUrl: string | null = null; // Persist the working endpoint
 
     constructor() {
         super({ requiresApiKey: false, providerName: 'Binance' });
@@ -100,45 +98,12 @@ export class BinanceProvider extends BaseProvider<BinanceProviderConfig> {
     }
 
     /**
-     * Resolves the working Binance API endpoint.
-     * Tries default first, then falls back to US endpoint.
-     * Caches the working endpoint for future calls.
+     * Keep the requested venue even when it is unreachable. Binance.US is a
+     * different market; silently using its prices under BINANCE metadata makes
+     * historical results and symbol identity incorrect. Existing request error
+     * handling reports unavailable data instead of substituting another venue.
      */
     private async getBaseUrl(): Promise<string> {
-        if (this.activeApiUrl) {
-            return this.activeApiUrl;
-        }
-
-        // Try default endpoint
-        try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout
-            const response = await fetch(`${BINANCE_API_URL_DEFAULT}/ping`, { signal: controller.signal });
-            clearTimeout(timeoutId);
-            if (response.ok) {
-                this.activeApiUrl = BINANCE_API_URL_DEFAULT;
-                return this.activeApiUrl;
-            }
-        } catch (e) {
-            // Default failed, try US endpoint
-            // console.warn('Binance default API unreachable, trying US endpoint...');
-        }
-
-        // Try US endpoint
-        try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 5000);
-            const response = await fetch(`${BINANCE_API_URL_US}/ping`, { signal: controller.signal });
-            clearTimeout(timeoutId);
-            if (response.ok) {
-                this.activeApiUrl = BINANCE_API_URL_US;
-                return this.activeApiUrl;
-            }
-        } catch (e) {
-            // Both failed
-        }
-
-        // Fallback to default if check fails entirely (let actual request fail)
         return BINANCE_API_URL_DEFAULT;
     }
 

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import { Series } from '../../../Series';
+import { parseArgsForPineParams } from '../../utils';
 
 /**
  * Parabolic SAR (Stop and Reverse)
@@ -14,10 +15,17 @@ import { Series } from '../../../Series';
  * @returns Parabolic SAR value
  */
 export function sar(context: any) {
-    return (_start: any, _inc: any, _max: any, _callId?: string) => {
-        const start = Series.from(_start).get(0);
-        const inc = Series.from(_inc).get(0);
-        const max = Series.from(_max).get(0);
+    return (...rawArgs: any[]) => {
+        // TA calls append their state identity after a variable number of Pine
+        // arguments. Named bags are themselves wrapped by ta.param as Series.
+        const args = rawArgs.map(arg => arg instanceof Series ? arg.get(0) : arg);
+        const _callId = typeof args[args.length - 1] === 'string' ? args.pop() : undefined;
+        const parsed = parseArgsForPineParams<any>(args, ['start', 'inc', 'max'], {
+            start: 'series', inc: 'series', max: 'series',
+        });
+        const start = Series.from(parsed.start).get(0);
+        const inc = Series.from(parsed.inc).get(0);
+        const max = Series.from(parsed.max).get(0);
 
         if (!context.taState) context.taState = {};
         const stateKey = _callId || `sar_${start}_${inc}_${max}`;
